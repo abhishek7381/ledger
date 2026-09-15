@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger tests</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#F4F6F3;color:#14211C;
+     margin:0;padding:20px;line-height:1.5}
+h1{font-size:19px;margin:0 0 4px}
+p.lead{color:#6A7872;font-size:14px;margin:0 0 18px}
+#summary{font-size:16px;font-weight:600;padding:12px 14px;border-radius:10px;margin-bottom:16px}
+.good{background:#1E6F50;color:#fff}
+.bad{background:#A8432B;color:#fff}
+ol{margin:0;padding-left:22px}
+li{padding:3px 0;font-size:14px}
+li.f{color:#A8432B;font-weight:600}
+code{font-family:ui-monospace,monospace;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Ledger tests</h1>
+<p class="lead">Loads the real functions out of index.html, so this tests the shipping code.
+Open it on the phone or the desktop — no tooling needed.</p>
+<div id="summary">Running…</div>
+<ol id="out"></ol>
+
+<script>
+let pass = 0, fail = 0;
+const out = document.getElementById("out");
+
+function ok(name, got, want){
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  const li = document.createElement("li");
+  if (g === w) { pass++; li.textContent = name; }
+  else { fail++; li.className = "f"; li.textContent = name + " — got " + g + ", wanted " + w; }
+  out.appendChild(li);
+}
+
+(async function(){
+  // pull the pure logic (everything above the DOM code) out of the app
+  const html = await (await fetch("index.html")).text();
+  const src = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const logic = src.slice(0, src.indexOf("const state = {"));
+  const api = new Function(logic +
+    "return {parseMinor,minorToPlain,formatMoney,toEpochDay,monthRange,isoOf,epochDayFromIso,CATEGORIES};")();
+  const { parseMinor, minorToPlain, formatMoney, toEpochDay, monthRange, isoOf, epochDayFromIso, CATEGORIES } = api;
+
+  // ---- money is integer minor units, never a float ----
+  ok("340 parses to 34000 paise",     parseMinor("340", "INR"), 34000);
+  ok("12.34 parses to 1234",          parseMinor("12.34", "INR"), 1234);
+  ok("12.5 pads to 1250",             parseMinor("12.5", "INR"), 1250);
+  ok("1,23,456 ignores grouping",     parseMinor("1,23,456", "INR"), 12345600);
+  ok("1.239 truncates, never rounds", parseMinor("1.239", "INR"), 123);
+  ok(".75 parses to 75",              parseMinor(".75", "INR"), 75);
+  ok("JPY has no minor unit",         parseMinor("500", "JPY"), 500);
+  ok("letters rejected",              parseMinor("abc", "INR"), null);
+  ok("blank rejected",                parseMinor("   ", "INR"), null);
+  ok("a lone dot is rejected",        parseMinor(".", "INR"), null);
+  ok("negatives rejected",            parseMinor("-5", "INR"), null);
+
+  // ---- no drift after 500 entries ----
+  let total = 0;
+  for (let i = 0; i < 500; i++) total += parseMinor("19.99", "INR");
+  ok("500 x 19.99 is exact",          total, 999500);
+  ok("and converts back cleanly",     minorToPlain(999500, "INR"), "9995.00");
+
+  // ---- month boundaries: the 1st and the 31st belong to their own month ----
+  const [jan1, jan31] = monthRange(2026, 0);
+  ok("1 Jan falls inside January",    toEpochDay(2026, 0, 1) >= jan1 && toEpochDay(2026, 0, 1) <= jan31, true);
+  ok("31 Jan falls inside January",   toEpochDay(2026, 0, 31) >= jan1 && toEpochDay(2026, 0, 31) <= jan31, true);
+  ok("31 Dec stays in December",      toEpochDay(2025, 11, 31) >= jan1, false);
+  ok("1 Feb stays in February",       toEpochDay(2026, 1, 1) <= jan31, false);
+  ok("February 2024 has 29 days",     monthRange(2024, 1)[1] - monthRange(2024, 1)[0] + 1, 29);
+  ok("February 2026 has 28 days",     monthRange(2026, 1)[1] - monthRange(2026, 1)[0] + 1, 28);
+  ok("a date survives a round trip",  isoOf(epochDayFromIso("2026-09-14")), "2026-09-14");
+  ok("epoch day 0 is 1 Jan 1970",     isoOf(0), "1970-01-01");
+
+  // ---- formatting ----
+  const nb = (s) => s.replace(/\u00a0/g, " ");
+  ok("INR uses lakh grouping",        nb(formatMoney(12345600, "INR")), "₹1,23,456");
+  ok("paise shown when not whole",    nb(formatMoney(123456, "INR")), "₹1,234.56");
+  ok("USD drops empty decimals",      nb(formatMoney(420000, "USD")), "$4,200");
+
+  // ---- categories ----
+  ok("category ids are unique",       new Set(CATEGORIES.map(c => c.id)).size, CATEGORIES.length);
+  ok("every category has a colour",   CATEGORIES.every(c => /^#[0-9A-Fa-f]{6}$/.test(c.color)), true);
+
+  const s = document.getElementById("summary");
+  s.className = fail ? "bad" : "good";
+  s.textContent = fail ? (fail + " failed, " + pass + " passed") : ("All " + pass + " tests passed");
+})().catch((e) => {
+  const s = document.getElementById("summary");
+  s.className = "bad";
+  s.textContent = "Could not run: " + e.message + " — are you opening this over http, not file://?";
+});
+</script>
+</body>
+</html>
